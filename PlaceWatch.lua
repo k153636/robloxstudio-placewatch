@@ -1,7 +1,7 @@
 --[[
-	PlaceWatch - Roblox Studio Plugin v0.3.0
+	PlaceWatch - Roblox Studio Plugin v0.4.0
 	Automatically detect and visualize differences between place snapshots.
-	Features: auto-scan, real-time detection, Discord webhook, click-to-select, filters
+	Features: smart notifications, auto-scan, Discord webhook, click-to-select, filters
 ]]
 
 -- ============================================================
@@ -567,21 +567,62 @@ local function onCompare()
 end
 
 -- ============================================================
+-- Notification Intelligence
+-- ============================================================
+local SCRIPT_CLASSES = {
+	Script = true, LocalScript = true, ModuleScript = true,
+}
+local ALERT_DELETE_THRESHOLD = 5
+
+local function classifyAlert(result)
+	-- Check for Script changes (immediate alert)
+	for _, entry in ipairs(result.added) do
+		if SCRIPT_CLASSES[entry.className] then return "alert", "Script added: " .. entry.path end
+	end
+	for _, entry in ipairs(result.removed) do
+		if SCRIPT_CLASSES[entry.className] then return "alert", "Script removed: " .. entry.path end
+	end
+	for _, entry in ipairs(result.modified) do
+		if SCRIPT_CLASSES[entry.className] then
+			for _, c in ipairs(entry.changes) do
+				if c.name == "Source" then return "alert", "Script modified: " .. entry.path end
+			end
+		end
+	end
+	-- Check for mass deletion
+	if result.summary.removed >= ALERT_DELETE_THRESHOLD then
+		return "alert", result.summary.removed .. " instances deleted"
+	end
+	return "normal", nil
+end
+
+-- ============================================================
 -- Discord Webhook
 -- ============================================================
-local function sendToDiscord(result)
-	if webhookUrl == "" then return end
+local pendingDiscordResult = nil -- accumulated changes for batched send
 
+local function buildEmbed(result, level, alertReason)
 	local s = result.summary
 	local placeName = game.Name ~= "" and game.Name or "Untitled Place"
 	local placeId = game.PlaceId
+
+	local embedColor = 3447003 -- blue (info)
+	local titleSuffix = ""
+	if level == "alert" then
+		embedColor = 15158332 -- red
+		titleSuffix = " [ALERT]"
+	elseif level == "warning" then
+		embedColor = 16776960 -- yellow
+		titleSuffix = " [WARNING]"
+	end
 
 	local fields = {}
 	if s.added > 0 then
 		local lines = {}
 		for i, entry in ipairs(result.added) do
 			if i > 10 then table.insert(lines, "... +" .. (s.added - 10) .. " more"); break end
-			table.insert(lines, "`+` " .. entry.path .. " (" .. entry.className .. ")")
+			local icon = SCRIPT_CLASSES[entry.className] and "**`+`**" or "`+`"
+			table.insert(lines, icon .. " " .. entry.path .. " (" .. entry.className .. ")")
 		end
 		table.insert(fields, { name = "Added (" .. s.added .. ")", value = table.concat(lines, "\n"), inline = false })
 	end
@@ -589,7 +630,8 @@ local function sendToDiscord(result)
 		local lines = {}
 		for i, entry in ipairs(result.removed) do
 			if i > 10 then table.insert(lines, "... +" .. (s.removed - 10) .. " more"); break end
-			table.insert(lines, "`-` " .. entry.path .. " (" .. entry.className .. ")")
+			local icon = SCRIPT_CLASSES[entry.className] and "**`-`**" or "`-`"
+			table.insert(lines, icon .. " " .. entry.path .. " (" .. entry.className .. ")")
 		end
 		table.insert(fields, { name = "Removed (" .. s.removed .. ")", value = table.concat(lines, "\n"), inline = false })
 	end
@@ -601,27 +643,40 @@ local function sendToDiscord(result)
 			for _, c in ipairs(entry.changes) do
 				table.insert(propChanges, c.name)
 			end
-			table.insert(lines, "`~` " .. entry.path .. " [" .. table.concat(propChanges, ", ") .. "]")
+			local icon = SCRIPT_CLASSES[entry.className] and "**`~`**" or "`~`"
+			table.insert(lines, icon .. " " .. entry.path .. " [" .. table.concat(propChanges, ", ") .. "]")
 		end
 		table.insert(fields, { name = "Modified (" .. s.modified .. ")", value = table.concat(lines, "\n"), inline = false })
 	end
 
-	local embed = {
-		title = "PlaceWatch - Changes Detected",
-		description = string.format("**%s** (PlaceId: %d)\n+%d added / -%d removed / ~%d modified",
-			placeName, placeId, s.added, s.removed, s.modified),
-		color = 3447003, -- blue
+	local desc = string.format("**%s** (PlaceId: %d)\n+%d added / -%d removed / ~%d modified",
+		placeName, placeId, s.added, s.removed, s.modified)
+	if alertReason then
+		desc = desc .. "\n\n" .. alertReason
+	end
+
+	return {
+		title = "PlaceWatch" .. titleSuffix,
+		description = desc,
+		color = embedColor,
 		fields = fields,
 		timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-		footer = { text = "PlaceWatch v0.3.0" },
+		footer = { text = "PlaceWatch v0.4.0" },
 	}
+end
 
+local function sendToDiscord(result, level, alertReason)
+	if webhookUrl == "" then return end
+
+	local embed = buildEmbed(result, level, alertReason)
 	local payload = HttpService:JSONEncode({ embeds = { embed } })
 
 	local ok, err = pcall(function()
 		HttpService:PostAsync(webhookUrl, payload, Enum.HttpContentType.ApplicationJson)
 	end)
-	if not ok then
+	if ok then
+		statusLabel.Text = "[Discord] Notification sent"
+	else
 		warn("[PlaceWatch] Webhook error: " .. tostring(err))
 	end
 end
@@ -630,7 +685,13 @@ end
 -- Auto-scan (periodic + real-time)
 -- ============================================================
 local pendingChange = false
-local lastAutoCompareTime = 0
+local accumulatedResult = nil -- accumulated changes between notifications
+
+local function mergeResults(existing, new)
+	if not existing then return new end
+	-- Merge: take the latest result (full re-diff is more accurate)
+	return new
+end
 
 local function autoCompare()
 	if not lastSnapshot then return end
@@ -644,10 +705,38 @@ local function autoCompare()
 		lastDiffResult = result
 		showResults(result, currentFilter)
 		statusLabel.Text = string.format("[Auto] %d changes (+%d -%d ~%d)", total, s.added, s.removed, s.modified)
-		sendToDiscord(result)
-		-- Auto-save new snapshot as baseline
+
+		-- Smart notification logic
+		local level, reason = classifyAlert(result)
+		if level == "alert" then
+			-- Immediate Discord notification for critical changes
+			sendToDiscord(result, "alert", reason)
+			accumulatedResult = nil
+			-- Update baseline after alert
+			lastSnapshot = currentSnap
+			plugin:SetSetting(SETTING_KEY, currentSnap)
+		else
+			-- Accumulate for batched notification (sent on save/interval)
+			accumulatedResult = mergeResults(accumulatedResult, result)
+		end
+	else
+		-- No changes, flush accumulated if any
+		if accumulatedResult then
+			sendToDiscord(accumulatedResult, "normal")
+			accumulatedResult = nil
+		end
+	end
+end
+
+-- Send accumulated changes (called on save / manual compare)
+local function flushNotification()
+	if accumulatedResult then
+		sendToDiscord(accumulatedResult, "normal")
+		-- Update baseline
+		local currentSnap = takeSnapshot()
 		lastSnapshot = currentSnap
 		plugin:SetSetting(SETTING_KEY, currentSnap)
+		accumulatedResult = nil
 	end
 end
 
@@ -681,24 +770,34 @@ local function connectChangeDetection()
 			return game:GetService(serviceName)
 		end)
 		if ok and service then
-			local c1 = service.DescendantAdded:Connect(function()
+			local c1 = service.DescendantAdded:Connect(function(desc)
 				pendingChange = true
+				-- Immediate check for Script additions
+				if SCRIPT_CLASSES[desc.ClassName] and autoSnapshotEnabled and lastSnapshot then
+					task.wait(1)
+					autoCompare()
+				end
 			end)
-			local c2 = service.DescendantRemoving:Connect(function()
+			local c2 = service.DescendantRemoving:Connect(function(desc)
 				pendingChange = true
+				-- Immediate check for Script removals
+				if SCRIPT_CLASSES[desc.ClassName] and autoSnapshotEnabled and lastSnapshot then
+					task.wait(1)
+					autoCompare()
+				end
 			end)
 			table.insert(changeDetectionConnections, c1)
 			table.insert(changeDetectionConnections, c2)
 		end
 	end
 
-	-- Debounced change handler
+	-- Debounced change handler for non-critical changes
 	task.spawn(function()
 		while true do
-			task.wait(5) -- check every 5 seconds
+			task.wait(10) -- check every 10 seconds
 			if pendingChange and autoSnapshotEnabled and lastSnapshot then
 				pendingChange = false
-				task.wait(2) -- debounce: wait for batch changes
+				task.wait(3) -- debounce
 				autoCompare()
 			end
 		end
@@ -712,8 +811,19 @@ toggleButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
 end)
 
-snapshotBtn.MouseButton1Click:Connect(onSnapshot)
-diffBtn.MouseButton1Click:Connect(onCompare)
+snapshotBtn.MouseButton1Click:Connect(function()
+	flushNotification() -- send any accumulated changes before new snapshot
+	onSnapshot()
+end)
+diffBtn.MouseButton1Click:Connect(function()
+	onCompare()
+	-- After manual compare, flush to Discord
+	if lastDiffResult then
+		local level, reason = classifyAlert(lastDiffResult)
+		sendToDiscord(lastDiffResult, level, reason)
+		accumulatedResult = nil
+	end
+end)
 
 autoBtn.MouseButton1Click:Connect(function()
 	autoSnapshotEnabled = not autoSnapshotEnabled
