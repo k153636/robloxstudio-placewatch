@@ -1,7 +1,7 @@
 --[[
-	PlaceWatch - Roblox Studio Plugin v0.2.0
+	PlaceWatch - Roblox Studio Plugin v0.3.0
 	Automatically detect and visualize differences between place snapshots.
-	Features: auto-snapshot on publish, click-to-select, filters
+	Features: auto-scan, real-time detection, Discord webhook, click-to-select, filters
 ]]
 
 -- ============================================================
@@ -189,12 +189,19 @@ local COLORS = {
 
 local SETTING_KEY = "PlaceWatch_LastSnapshot"
 local SETTING_AUTO = "PlaceWatch_AutoSnapshot"
+local SETTING_WEBHOOK = "PlaceWatch_WebhookUrl"
+local SETTING_INTERVAL = "PlaceWatch_Interval"
 local Selection = game:GetService("Selection")
+local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local StudioService = game:GetService("StudioService")
 
 local autoSnapshotEnabled = true
 local currentFilter = "all" -- all, added, removed, modified
+local webhookUrl = ""
+local autoInterval = 300 -- seconds (default 5 min)
+local autoScanRunning = false
+local changeDetectionConnections = {}
 
 -- Create toolbar & widget
 local toolbar = plugin:CreateToolbar("PlaceWatch")
@@ -353,13 +360,17 @@ summaryFrame.Position = UDim2.new(0, 0, 0, 78)
 scrollFrame.Position = UDim2.new(0, 0, 0, 108)
 scrollFrame.Size = UDim2.new(1, 0, 1, -158)
 
--- Expand button bar for 3 buttons
-buttonBar.Size = UDim2.new(1, 0, 0, 50)
+-- Expand button bar for 2 rows
+buttonBar.Size = UDim2.new(1, 0, 0, 80)
+buttonBar.Position = UDim2.new(0, 0, 1, -80)
+scrollFrame.Size = UDim2.new(1, 0, 1, -188)
 
-local snapshotBtn = createButton(buttonBar, "Snapshot", UDim2.new(0, 6, 0, 8), UDim2.new(0.33, -8, 0, 34))
-local diffBtn = createButton(buttonBar, "Compare", UDim2.new(0.33, 2, 0, 8), UDim2.new(0.34, -4, 0, 34))
-local autoBtn = createButton(buttonBar, "Auto: ON", UDim2.new(0.67, 2, 0, 8), UDim2.new(0.33, -8, 0, 34))
+local snapshotBtn = createButton(buttonBar, "Snapshot", UDim2.new(0, 6, 0, 6), UDim2.new(0.5, -8, 0, 30))
+local diffBtn = createButton(buttonBar, "Compare", UDim2.new(0.5, 2, 0, 6), UDim2.new(0.5, -8, 0, 30))
+local autoBtn = createButton(buttonBar, "Auto: ON", UDim2.new(0, 6, 0, 42), UDim2.new(0.33, -6, 0, 30))
 autoBtn.BackgroundColor3 = COLORS.added
+local webhookBtn = createButton(buttonBar, "Webhook", UDim2.new(0.33, 2, 0, 42), UDim2.new(0.34, -4, 0, 30))
+local intervalBtn = createButton(buttonBar, "5min", UDim2.new(0.67, 2, 0, 42), UDim2.new(0.33, -8, 0, 30))
 
 -- ============================================================
 -- UI Helpers
@@ -556,25 +567,143 @@ local function onCompare()
 end
 
 -- ============================================================
--- Auto-snapshot on publish
+-- Discord Webhook
 -- ============================================================
-local function onAutoSnapshot()
-	if not autoSnapshotEnabled then return end
-	onSnapshot()
-	statusLabel.Text = "[Auto] " .. statusLabel.Text
+local function sendToDiscord(result)
+	if webhookUrl == "" then return end
+
+	local s = result.summary
+	local placeName = game.Name ~= "" and game.Name or "Untitled Place"
+	local placeId = game.PlaceId
+
+	local fields = {}
+	if s.added > 0 then
+		local lines = {}
+		for i, entry in ipairs(result.added) do
+			if i > 10 then table.insert(lines, "... +" .. (s.added - 10) .. " more"); break end
+			table.insert(lines, "`+` " .. entry.path .. " (" .. entry.className .. ")")
+		end
+		table.insert(fields, { name = "Added (" .. s.added .. ")", value = table.concat(lines, "\n"), inline = false })
+	end
+	if s.removed > 0 then
+		local lines = {}
+		for i, entry in ipairs(result.removed) do
+			if i > 10 then table.insert(lines, "... +" .. (s.removed - 10) .. " more"); break end
+			table.insert(lines, "`-` " .. entry.path .. " (" .. entry.className .. ")")
+		end
+		table.insert(fields, { name = "Removed (" .. s.removed .. ")", value = table.concat(lines, "\n"), inline = false })
+	end
+	if s.modified > 0 then
+		local lines = {}
+		for i, entry in ipairs(result.modified) do
+			if i > 10 then table.insert(lines, "... +" .. (s.modified - 10) .. " more"); break end
+			local propChanges = {}
+			for _, c in ipairs(entry.changes) do
+				table.insert(propChanges, c.name)
+			end
+			table.insert(lines, "`~` " .. entry.path .. " [" .. table.concat(propChanges, ", ") .. "]")
+		end
+		table.insert(fields, { name = "Modified (" .. s.modified .. ")", value = table.concat(lines, "\n"), inline = false })
+	end
+
+	local embed = {
+		title = "PlaceWatch - Changes Detected",
+		description = string.format("**%s** (PlaceId: %d)\n+%d added / -%d removed / ~%d modified",
+			placeName, placeId, s.added, s.removed, s.modified),
+		color = 3447003, -- blue
+		fields = fields,
+		timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+		footer = { text = "PlaceWatch v0.3.0" },
+	}
+
+	local payload = HttpService:JSONEncode({ embeds = { embed } })
+
+	local ok, err = pcall(function()
+		HttpService:PostAsync(webhookUrl, payload, Enum.HttpContentType.ApplicationJson)
+	end)
+	if not ok then
+		warn("[PlaceWatch] Webhook error: " .. tostring(err))
+	end
 end
 
-local publishConnection = nil
-local function connectPublishHook()
-	local ok, _ = pcall(function()
-		publishConnection = StudioService:GetPropertyChangedSignal("StudioLocaleId"):Connect(function() end)
+-- ============================================================
+-- Auto-scan (periodic + real-time)
+-- ============================================================
+local pendingChange = false
+local lastAutoCompareTime = 0
+
+local function autoCompare()
+	if not lastSnapshot then return end
+
+	local currentSnap = takeSnapshot()
+	local result = computeDiff(lastSnapshot, currentSnap)
+	local s = result.summary
+	local total = s.added + s.removed + s.modified
+
+	if total > 0 then
+		lastDiffResult = result
+		showResults(result, currentFilter)
+		statusLabel.Text = string.format("[Auto] %d changes (+%d -%d ~%d)", total, s.added, s.removed, s.modified)
+		sendToDiscord(result)
+		-- Auto-save new snapshot as baseline
+		lastSnapshot = currentSnap
+		plugin:SetSetting(SETTING_KEY, currentSnap)
+	end
+end
+
+local function startAutoScan()
+	if autoScanRunning then return end
+	autoScanRunning = true
+
+	task.spawn(function()
+		while autoScanRunning and autoSnapshotEnabled do
+			task.wait(autoInterval)
+			if not autoSnapshotEnabled then break end
+			autoCompare()
+		end
+		autoScanRunning = false
 	end)
 end
 
--- Use ChangeHistoryService as a proxy for detecting publishes
-local lastWaypointTime = 0
-ChangeHistoryService.OnUndo:Connect(function() end)
-ChangeHistoryService.OnRedo:Connect(function() end)
+local function stopAutoScan()
+	autoScanRunning = false
+end
+
+-- Real-time change detection via DescendantAdded/Removing
+local function connectChangeDetection()
+	for _, conn in ipairs(changeDetectionConnections) do
+		conn:Disconnect()
+	end
+	changeDetectionConnections = {}
+
+	for _, serviceName in ipairs(Config.SCAN_SERVICES) do
+		local ok, service = pcall(function()
+			return game:GetService(serviceName)
+		end)
+		if ok and service then
+			local c1 = service.DescendantAdded:Connect(function()
+				pendingChange = true
+			end)
+			local c2 = service.DescendantRemoving:Connect(function()
+				pendingChange = true
+			end)
+			table.insert(changeDetectionConnections, c1)
+			table.insert(changeDetectionConnections, c2)
+		end
+	end
+
+	-- Debounced change handler
+	task.spawn(function()
+		while true do
+			task.wait(5) -- check every 5 seconds
+			if pendingChange and autoSnapshotEnabled and lastSnapshot then
+				pendingChange = false
+				task.wait(2) -- debounce: wait for batch changes
+				autoCompare()
+			end
+		end
+	end)
+end
 
 -- ============================================================
 -- Events
@@ -591,11 +720,67 @@ autoBtn.MouseButton1Click:Connect(function()
 	if autoSnapshotEnabled then
 		autoBtn.Text = "Auto: ON"
 		autoBtn.BackgroundColor3 = COLORS.added
+		if not lastSnapshot then
+			onSnapshot()
+		end
+		startAutoScan()
+		statusLabel.Text = "Auto-scan started"
 	else
 		autoBtn.Text = "Auto: OFF"
 		autoBtn.BackgroundColor3 = COLORS.border
+		stopAutoScan()
+		statusLabel.Text = "Auto-scan stopped"
 	end
 	plugin:SetSetting(SETTING_AUTO, autoSnapshotEnabled)
+end)
+
+-- Webhook button: prompt for URL
+webhookBtn.MouseButton1Click:Connect(function()
+	if webhookUrl ~= "" then
+		-- Toggle off
+		webhookUrl = ""
+		plugin:SetSetting(SETTING_WEBHOOK, "")
+		webhookBtn.BackgroundColor3 = COLORS.button
+		webhookBtn.Text = "Webhook"
+		statusLabel.Text = "Webhook disabled"
+	else
+		-- Prompt: user must set webhook URL via Output console command
+		statusLabel.Text = "Run in Command Bar: _G.PlaceWatchWebhook = 'YOUR_URL'"
+		task.spawn(function()
+			for i = 1, 60 do -- wait up to 60 seconds
+				task.wait(1)
+				if _G.PlaceWatchWebhook and _G.PlaceWatchWebhook ~= "" then
+					webhookUrl = _G.PlaceWatchWebhook
+					_G.PlaceWatchWebhook = nil
+					plugin:SetSetting(SETTING_WEBHOOK, webhookUrl)
+					webhookBtn.BackgroundColor3 = COLORS.added
+					webhookBtn.Text = "Hook: ON"
+					statusLabel.Text = "Webhook connected!"
+					return
+				end
+			end
+			statusLabel.Text = "Webhook setup timed out"
+		end)
+	end
+end)
+
+-- Interval button: cycle through intervals
+local intervals = {60, 120, 300, 600}
+local intervalLabels = {"1min", "2min", "5min", "10min"}
+local intervalIndex = 3 -- default 5min
+
+intervalBtn.MouseButton1Click:Connect(function()
+	intervalIndex = (intervalIndex % #intervals) + 1
+	autoInterval = intervals[intervalIndex]
+	intervalBtn.Text = intervalLabels[intervalIndex]
+	plugin:SetSetting(SETTING_INTERVAL, intervalIndex)
+	statusLabel.Text = "Auto interval: " .. intervalLabels[intervalIndex]
+	-- Restart auto-scan with new interval
+	if autoSnapshotEnabled then
+		stopAutoScan()
+		task.wait(0.1)
+		startAutoScan()
+	end
 end)
 
 allFilterBtn.MouseButton1Click:Connect(function() updateFilterUI("all") end)
@@ -616,4 +801,24 @@ if savedAuto ~= nil then
 	end
 end
 
+local savedWebhook = plugin:GetSetting(SETTING_WEBHOOK)
+if savedWebhook and savedWebhook ~= "" then
+	webhookUrl = savedWebhook
+	webhookBtn.BackgroundColor3 = COLORS.added
+	webhookBtn.Text = "Hook: ON"
+end
+
+local savedInterval = plugin:GetSetting(SETTING_INTERVAL)
+if savedInterval then
+	intervalIndex = savedInterval
+	autoInterval = intervals[intervalIndex] or 300
+	intervalBtn.Text = intervalLabels[intervalIndex] or "5min"
+end
+
 loadSavedSnapshot()
+
+-- Start auto features
+if autoSnapshotEnabled and lastSnapshot then
+	startAutoScan()
+end
+connectChangeDetection()

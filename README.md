@@ -8,8 +8,9 @@ Placeのスナップショット間の差分を自動検出・可視化する **
 - **Compare** - 前回のスナップショットとの差分を検出（追加・削除・変更）
 - **クリックで選択** - 変更項目をクリックするとExplorerでそのインスタンスを選択
 - **フィルタ** - 変更タイプで絞り込み: All / +Added / -Removed / ~Modified
-- **Auto Snapshot** - 自動スナップショットのON/OFF切り替え
-- **永続保存** - スナップショットはセッション間で保持されます
+- **自動スキャン** - 定期スキャン（1分/2分/5分/10分）+ リアルタイム変更検出
+- **Discord Webhook** - 変更を自動でDiscordチャンネルに通知
+- **永続保存** - スナップショット・設定はセッション間で保持されます
 
 ## 追跡プロパティ
 
@@ -51,6 +52,23 @@ Workspace, ReplicatedStorage, ServerStorage, ServerScriptService, StarterGui, St
 3. Placeに変更を加える
 4. **Compare** をクリックして差分を確認
 5. 変更項目をクリックするとExplorerで選択される
+
+### 自動スキャン
+
+- **Auto: ON** → 自動でスナップショットを取得・比較（インスタンスの追加/削除をリアルタイム検出）
+- **間隔ボタン** → クリックで 1min / 2min / 5min / 10min を切り替え
+
+### Discord Webhook 設定
+
+1. **Webhook** ボタンをクリック
+2. StudioのCommand Barに以下を入力して実行:
+
+```lua
+_G.PlaceWatchWebhook = "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+```
+
+3. 「Webhook connected!」と表示されたら完了
+4. 変更が検出されると自動でDiscordに通知されます
 
 ## ファイル構成
 
