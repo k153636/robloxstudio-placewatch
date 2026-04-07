@@ -1,69 +1,69 @@
 # PlaceWatch
 
-**Roblox Studio Plugin** that automatically detects and visualizes differences between place snapshots.
+Placeのスナップショット間の差分を自動検出・可視化する **Roblox Studio プラグイン**です。
 
-## Features
+## 機能
 
-- **Snapshot** - Capture the current state of your place's instance tree
-- **Compare** - Detect additions, removals, and modifications since the last snapshot
-- **Click to Select** - Click any change entry to select the instance in Explorer
-- **Filters** - Filter by change type: All / +Added / -Removed / ~Modified
-- **Auto Snapshot** - Toggle automatic snapshots on/off
-- **Persistent Storage** - Snapshots are saved between sessions
+- **Snapshot** - Placeのインスタンスツリーの現在の状態を保存
+- **Compare** - 前回のスナップショットとの差分を検出（追加・削除・変更）
+- **クリックで選択** - 変更項目をクリックするとExplorerでそのインスタンスを選択
+- **フィルタ** - 変更タイプで絞り込み: All / +Added / -Removed / ~Modified
+- **Auto Snapshot** - 自動スナップショットのON/OFF切り替え
+- **永続保存** - スナップショットはセッション間で保持されます
 
-## Tracked Properties
+## 追跡プロパティ
 
-| Class | Properties |
-| ----- | ---------- |
+| クラス | プロパティ |
+| ------ | ---------- |
 | BasePart | Position, Size, Orientation, Color, Material, Anchored, Transparency, CanCollide, CastShadow, Reflectance, Shape |
 | Model | PrimaryPart |
-| GUI (TextLabel, etc.) | Text, TextColor3, BackgroundColor3, TextSize, Font, Visible |
-| Image (ImageLabel, etc.) | Image, ImageColor3, BackgroundColor3, Visible |
-| Lights | Brightness, Color, Range, Angle, Face |
+| GUI (TextLabel等) | Text, TextColor3, BackgroundColor3, TextSize, Font, Visible |
+| Image (ImageLabel等) | Image, ImageColor3, BackgroundColor3, Visible |
+| Light系 | Brightness, Color, Range, Angle, Face |
 | Sound | SoundId, Volume, PlaybackSpeed, Looped |
 | ParticleEmitter | Texture, Rate, Lifetime, Speed, Color |
 | Decal / Texture | Texture, Face, Transparency |
 
-## Scanned Services
+## スキャン対象サービス
 
 Workspace, ReplicatedStorage, ServerStorage, ServerScriptService, StarterGui, StarterPack, StarterPlayer, Lighting, SoundService
 
-## Installation
+## インストール
 
-### Quick Install (Single File)
+### 簡単インストール（単一ファイル）
 
-1. Download `PlaceWatch.lua`
-2. Place it in your Roblox Studio plugins folder:
+1. `PlaceWatch.lua` をダウンロード
+2. Roblox Studioのプラグインフォルダに配置:
    - Windows: `%LOCALAPPDATA%\Roblox\Plugins\`
    - Mac: `~/Documents/Roblox/Plugins/`
-3. Restart Roblox Studio
+3. Roblox Studioを再起動
 
-### From Source (Rojo)
+### ソースからビルド（Rojo）
 
-1. Clone this repo
-2. Build with Rojo: `rojo build -o PlaceWatch.rbxm`
-3. Place the output in your plugins folder
+1. このリポジトリをクローン
+2. Rojoでビルド: `rojo build -o PlaceWatch.rbxm`
+3. 出力ファイルをプラグインフォルダに配置
 
-## Usage
+## 使い方
 
-1. Click **PlaceWatch** in the toolbar to open the panel
-2. Click **Snapshot** to save the current state
-3. Make changes to your place
-4. Click **Compare** to see what changed
-5. Click any entry to select it in Explorer
+1. ツールバーの **PlaceWatch** をクリックしてパネルを開く
+2. **Snapshot** をクリックして現在の状態を保存
+3. Placeに変更を加える
+4. **Compare** をクリックして差分を確認
+5. 変更項目をクリックするとExplorerで選択される
 
-## File Structure
+## ファイル構成
 
 ```text
 placewatch-plugin/
-├── PlaceWatch.lua         -- Single-file version (ready to install)
+├── PlaceWatch.lua         -- 単一ファイル版（そのままインストール可能）
 ├── src/
-│   ├── init.server.lua    -- Entry point (modular version)
-│   ├── Config.lua         -- Configuration
-│   ├── Snapshot.lua       -- Instance tree capture
-│   ├── DiffEngine.lua     -- Diff computation
-│   └── UI.lua             -- Plugin UI
-├── design.md              -- Technical design document
+│   ├── init.server.lua    -- エントリーポイント（モジュール版）
+│   ├── Config.lua         -- 設定
+│   ├── Snapshot.lua       -- インスタンスツリー取得
+│   ├── DiffEngine.lua     -- 差分検出エンジン
+│   └── UI.lua             -- プラグインUI
+├── design.md              -- 技術設計書
 └── README.md
 ```
 
@@ -72,6 +72,6 @@ placewatch-plugin/
 - [@k153636](https://github.com/k153636)
 - [Claude](https://claude.ai) (Anthropic)
 
-## License
+## ライセンス
 
 MIT
