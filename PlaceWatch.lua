@@ -114,7 +114,7 @@ local function takeSnapshot()
 			count = captureTree(service, data, 0, count)
 		end
 	end
-	return { data = data, timestamp = os.time(), instanceCount = count }
+	return { data = data, timestamp = os.time(), instanceCount = count, placeId = game.PlaceId }
 end
 
 -- ============================================================
@@ -515,6 +515,12 @@ local lastSnapshot = nil
 local function loadSavedSnapshot()
 	local saved = plugin:GetSetting(SETTING_KEY)
 	if saved then
+		-- Invalidate if PlaceId changed
+		if saved.placeId and saved.placeId ~= game.PlaceId then
+			plugin:SetSetting(SETTING_KEY, nil)
+			statusLabel.Text = "Place changed. Click 'Snapshot' to start."
+			return
+		end
 		lastSnapshot = saved
 		local timeStr = os.date("%Y-%m-%d %H:%M:%S", saved.timestamp)
 		statusLabel.Text = "Last: " .. timeStr .. " (" .. saved.instanceCount .. " instances)"
