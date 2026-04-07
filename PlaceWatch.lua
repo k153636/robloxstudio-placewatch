@@ -1,7 +1,7 @@
 --[[
-	PlaceWatch - Roblox Studio Plugin v0.4.0
+	PlaceWatch - Roblox Studio Plugin v0.5.0
 	Automatically detect and visualize differences between place snapshots.
-	Features: smart notifications, auto-scan, Discord webhook, click-to-select, filters
+	Features: 2-button UI, smart notifications, auto-scan, Discord webhook
 ]]
 
 -- ============================================================
@@ -360,17 +360,14 @@ summaryFrame.Position = UDim2.new(0, 0, 0, 78)
 scrollFrame.Position = UDim2.new(0, 0, 0, 108)
 scrollFrame.Size = UDim2.new(1, 0, 1, -158)
 
--- Expand button bar for 2 rows
-buttonBar.Size = UDim2.new(1, 0, 0, 80)
-buttonBar.Position = UDim2.new(0, 0, 1, -80)
-scrollFrame.Size = UDim2.new(1, 0, 1, -188)
+-- Single row: 2 buttons
+buttonBar.Size = UDim2.new(1, 0, 0, 50)
+buttonBar.Position = UDim2.new(0, 0, 1, -50)
+scrollFrame.Size = UDim2.new(1, 0, 1, -158)
 
-local snapshotBtn = createButton(buttonBar, "Snapshot", UDim2.new(0, 6, 0, 6), UDim2.new(0.5, -8, 0, 30))
-local diffBtn = createButton(buttonBar, "Compare", UDim2.new(0.5, 2, 0, 6), UDim2.new(0.5, -8, 0, 30))
-local autoBtn = createButton(buttonBar, "Auto: ON", UDim2.new(0, 6, 0, 42), UDim2.new(0.33, -6, 0, 30))
+local snapshotBtn = createButton(buttonBar, "Snapshot", UDim2.new(0, 8, 0, 8), UDim2.new(0.5, -12, 0, 34))
+local autoBtn = createButton(buttonBar, "Auto: ON", UDim2.new(0.5, 4, 0, 8), UDim2.new(0.5, -12, 0, 34))
 autoBtn.BackgroundColor3 = COLORS.added
-local webhookBtn = createButton(buttonBar, "Webhook", UDim2.new(0.33, 2, 0, 42), UDim2.new(0.34, -4, 0, 30))
-local intervalBtn = createButton(buttonBar, "5min", UDim2.new(0.67, 2, 0, 42), UDim2.new(0.33, -8, 0, 30))
 
 -- ============================================================
 -- UI Helpers
@@ -811,18 +808,18 @@ toggleButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
 end)
 
+-- Snapshot button: save baseline + compare + send to Discord
 snapshotBtn.MouseButton1Click:Connect(function()
-	flushNotification() -- send any accumulated changes before new snapshot
-	onSnapshot()
-end)
-diffBtn.MouseButton1Click:Connect(function()
-	onCompare()
-	-- After manual compare, flush to Discord
-	if lastDiffResult then
-		local level, reason = classifyAlert(lastDiffResult)
-		sendToDiscord(lastDiffResult, level, reason)
-		accumulatedResult = nil
+	if lastSnapshot then
+		-- Compare first, then update baseline
+		onCompare()
+		if lastDiffResult then
+			local level, reason = classifyAlert(lastDiffResult)
+			sendToDiscord(lastDiffResult, level, reason)
+			accumulatedResult = nil
+		end
 	end
+	onSnapshot()
 end)
 
 autoBtn.MouseButton1Click:Connect(function()
@@ -842,55 +839,6 @@ autoBtn.MouseButton1Click:Connect(function()
 		statusLabel.Text = "Auto-scan stopped"
 	end
 	plugin:SetSetting(SETTING_AUTO, autoSnapshotEnabled)
-end)
-
--- Webhook button: prompt for URL
-webhookBtn.MouseButton1Click:Connect(function()
-	if webhookUrl ~= "" then
-		-- Toggle off
-		webhookUrl = ""
-		plugin:SetSetting(SETTING_WEBHOOK, "")
-		webhookBtn.BackgroundColor3 = COLORS.button
-		webhookBtn.Text = "Webhook"
-		statusLabel.Text = "Webhook disabled"
-	else
-		-- Prompt: user must set webhook URL via Output console command
-		statusLabel.Text = "Run in Command Bar: _G.PlaceWatchWebhook = 'YOUR_URL'"
-		task.spawn(function()
-			for i = 1, 60 do -- wait up to 60 seconds
-				task.wait(1)
-				if _G.PlaceWatchWebhook and _G.PlaceWatchWebhook ~= "" then
-					webhookUrl = _G.PlaceWatchWebhook
-					_G.PlaceWatchWebhook = nil
-					plugin:SetSetting(SETTING_WEBHOOK, webhookUrl)
-					webhookBtn.BackgroundColor3 = COLORS.added
-					webhookBtn.Text = "Hook: ON"
-					statusLabel.Text = "Webhook connected!"
-					return
-				end
-			end
-			statusLabel.Text = "Webhook setup timed out"
-		end)
-	end
-end)
-
--- Interval button: cycle through intervals
-local intervals = {60, 120, 300, 600}
-local intervalLabels = {"1min", "2min", "5min", "10min"}
-local intervalIndex = 3 -- default 5min
-
-intervalBtn.MouseButton1Click:Connect(function()
-	intervalIndex = (intervalIndex % #intervals) + 1
-	autoInterval = intervals[intervalIndex]
-	intervalBtn.Text = intervalLabels[intervalIndex]
-	plugin:SetSetting(SETTING_INTERVAL, intervalIndex)
-	statusLabel.Text = "Auto interval: " .. intervalLabels[intervalIndex]
-	-- Restart auto-scan with new interval
-	if autoSnapshotEnabled then
-		stopAutoScan()
-		task.wait(0.1)
-		startAutoScan()
-	end
 end)
 
 allFilterBtn.MouseButton1Click:Connect(function() updateFilterUI("all") end)
@@ -914,18 +862,44 @@ end
 local savedWebhook = plugin:GetSetting(SETTING_WEBHOOK)
 if savedWebhook and savedWebhook ~= "" then
 	webhookUrl = savedWebhook
-	webhookBtn.BackgroundColor3 = COLORS.added
-	webhookBtn.Text = "Hook: ON"
 end
 
 local savedInterval = plugin:GetSetting(SETTING_INTERVAL)
 if savedInterval then
-	intervalIndex = savedInterval
-	autoInterval = intervals[intervalIndex] or 300
-	intervalBtn.Text = intervalLabels[intervalIndex] or "5min"
+	autoInterval = savedInterval
 end
 
 loadSavedSnapshot()
+
+-- _G config listener: check for webhook/interval changes
+task.spawn(function()
+	while true do
+		task.wait(2)
+		if _G.PlaceWatchWebhook then
+			webhookUrl = _G.PlaceWatchWebhook
+			_G.PlaceWatchWebhook = nil
+			plugin:SetSetting(SETTING_WEBHOOK, webhookUrl)
+			statusLabel.Text = "Webhook connected!"
+		end
+		if _G.PlaceWatchInterval then
+			autoInterval = _G.PlaceWatchInterval
+			_G.PlaceWatchInterval = nil
+			plugin:SetSetting(SETTING_INTERVAL, autoInterval)
+			statusLabel.Text = "Interval: " .. autoInterval .. "s"
+			if autoSnapshotEnabled then
+				stopAutoScan()
+				task.wait(0.1)
+				startAutoScan()
+			end
+		end
+		if _G.PlaceWatchWebhookOff then
+			webhookUrl = ""
+			_G.PlaceWatchWebhookOff = nil
+			plugin:SetSetting(SETTING_WEBHOOK, "")
+			statusLabel.Text = "Webhook disabled"
+		end
+	end
+end)
 
 -- Start auto features
 if autoSnapshotEnabled and lastSnapshot then
